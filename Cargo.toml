@@ -10,21 +10,25 @@ license-file = "LICENSE"
 members = [
     "client",
     "relay-eth",
-    "relay-ton",
     "relay-models",
-    "relay-utils"
+    "relay-ton",
+    "relay-utils",
 ]
+
+[[bin]]
+name = "config-generator"
+
 
 [dependencies]
 # Local dependencies
 relay-eth = { path = "./relay-eth" }
-relay-ton = { path = "./relay-ton" }
 relay-models = { path = "./relay-models" }
+relay-ton = { path = "./relay-ton" }
 relay-utils = { path = "./relay-utils" }
 
 # General dependencies
-async-trait = "0.1"
 anyhow = "1.0.33"
+async-trait = "0.1"
 backtrace = "0.3.55"
 base64 = "*"
 borsh = "0.9.0"
@@ -41,34 +45,35 @@ num-bigint = "0.2.6"
 num-traits = "0.2.14"
 opg = { version = "0.0", features = ["chrono"] }
 rand = "0.6"
-sha3 = "0.9.1"
+semver = "1.0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.59"
 serde_yaml = "0.8.14"
+sha3 = "0.9.1"
 sled = "0.34.5"
 thiserror = "1.0.22"
-toml = "0.5.7"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1.5"
+toml = "0.5.7"
 url = "2.1.1"
-warp = "0.3"
-semver = "0.11.0"
+warp = { version = "0.3", default-features = false }
 
 # ETH specific dependencies
 ethabi = "14.0.0"
+ed25519-dalek = "1.0.1"
 
 # TON specific dependencies
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
 ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
 
+
 # Crypto stuff
-secp256k1 = { version = "0.20.0", features = ["default", "rand", "recovery"] }
-ed25519-dalek = "1.0.1"
 ring = "0.16.15"
-sodiumoxide = "0.2.6"
+secp256k1 = { version = "0.20.0", features = ["default", "rand", "recovery"] }
 secstr = "0.4.0"
-tiny-hderive = "0.3.0"
+sodiumoxide = "0.2.6"
 tiny-bip39 = "0.8.0"
-tokio-stream = "0.1.5"
+tiny-hderive = "0.3.0"
 
 [dev-dependencies]
 pretty_assertions = "0.7.2"
@@ -78,7 +83,7 @@ default = ["graphql-transport"]
 tonlib-transport = ["relay-ton/tonlib-transport"]
 graphql-transport = ["relay-ton/graphql-transport"]
 paranoid = []
-dockered = []
+dockerized = []
 
 [package.metadata.deb]
 depends = "$auto"
@@ -89,7 +94,7 @@ assets = [
 ]
 conf-files = ["/etc/relay.conf"]
 maintainer-scripts = "debian/"
-features = [ "graphql-transport", "tonlib-transport" ]
+features = ["graphql-transport", "tonlib-transport"]
 
 [package.metadata.deb.systemd-units]
 unit-scripts = "debian/"

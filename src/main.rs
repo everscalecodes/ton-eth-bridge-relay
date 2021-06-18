@@ -1,12 +1,12 @@
 use anyhow::Error;
-#[cfg(not(feature = "dockered"))]
+#[cfg(not(feature = "dockerized"))]
 use clap::IntoApp;
 
 use anyhow::Result;
 use relay::config::*;
 use relay::engine;
 
-#[cfg(feature = "dockered")]
+#[cfg(feature = "dockerized")]
 async fn run() -> Result<()> {
     let config = read_env()?;
     init_logger(&config.logger_settings)?;
@@ -14,7 +14,7 @@ async fn run() -> Result<()> {
     engine::run(config).await
 }
 
-#[cfg(not(feature = "dockered"))]
+#[cfg(not(feature = "dockerized"))]
 async fn run() -> Result<()> {
     let args = parse_args();
     match (args.config, args.gen_config) {
