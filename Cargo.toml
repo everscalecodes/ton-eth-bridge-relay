@@ -70,10 +70,11 @@ ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
 # Crypto stuff
 ring = "0.16.15"
 secp256k1 = { version = "0.20.0", features = ["default", "rand", "recovery"] }
-secstr = "0.4.0"
+secstr = { version = "0.4.0", features = ["serde"] }
 sodiumoxide = "0.2.6"
 tiny-bip39 = "0.8.0"
 tiny-hderive = "0.3.0"
+tap = "1.0.1"
 
 [dev-dependencies]
 pretty_assertions = "0.7.2"

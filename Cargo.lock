@@ -2388,6 +2388,7 @@ dependencies = [
  "sha3",
  "sled",
  "sodiumoxide",
+ "tap",
  "thiserror",
  "tiny-bip39",
  "tiny-hderive",
