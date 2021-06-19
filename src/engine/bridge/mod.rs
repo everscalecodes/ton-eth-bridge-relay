@@ -55,8 +55,7 @@ pub async fn make_bridge(
 
     let eth_listener = Arc::new(
         EthListener::new(
-            Url::parse(&configs.eth_settings.node_address)
-                .map_err(|e| Error::new(e).context("Bad url for eth_config provided"))?,
+            configs.eth_settings.node_address.clone(),
             db.clone(),
             configs.eth_settings.tcp_connection_count,
             configs.eth_settings.get_eth_data_timeout,

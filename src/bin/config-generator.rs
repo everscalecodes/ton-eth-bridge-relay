@@ -8,11 +8,10 @@ use config::Config;
 use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
 use tap::Pipe;
-use ton_block::MsgAddressInt;
 use url::Url;
 
+use relay::crypto::key_managment::KeyData;
 use relay::crypto::recovery::{derive_from_words_eth, derive_from_words_ton};
-use relay::prelude::FromStr;
 
 #[derive(Clap, Debug)]
 struct Opts {
@@ -30,11 +29,43 @@ enum Subcommand {
 #[derive(Clap, Debug)]
 struct Backup {}
 
-#[derive(Clap, Debug)]
+#[derive(Clap, Debug, Clone)]
 struct Init {
+    /// Path to relay keys
     #[clap(default_value = "./relay-keys.json")]
     #[clap(long, short)]
-    generated_config_path: PathBuf,
+    crypto_keys_path: PathBuf,
+    ///Path to base relay config
+    #[clap(default_value = "relay-config.yaml")]
+    #[clap(long, short)]
+    relay_config_path: PathBuf,
+    #[clap(long)]
+    pub ton_seed: Option<String>,
+    #[clap(long)]
+    pub eth_seed: Option<String>,
+    #[clap(long)]
+    pub ton_derivation_path: Option<String>,
+    #[clap(long)]
+    pub eth_derivation_path: Option<String>,
+    #[clap(long)]
+    /// Url of eth node
+    pub eth_node_address: Url,
+    #[clap(long)]
+    //todo set default address after stabilization
+    pub ton_bridge_contract_address: ton_block::MsgAddressInt,
+    #[clap(long)]
+    #[clap(group = "transport")]
+    pub graphql_endpoint_address: Option<Url>,
+    #[clap(long)]
+    #[clap(group = "transport", required(true))]
+    #[clap(requires = "adnl-server-key")]
+    pub adnl_endpoint_address: Option<SocketAddr>,
+    #[clap(long)]
+    pub adnl_server_key: Option<String>,
+    #[clap(long)]
+    pub eth_bridge_address: relay_eth::Address,
+    #[clap(long)]
+    pub staking_account: relay_eth::Address,
 }
 
 #[derive(Clap, Debug)]
@@ -53,18 +84,8 @@ fn main() -> Result<()> {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename = "SCREAMING_SNAKE_CASE")]
-pub struct InitData {
-    pub ton_seed: Option<SecUtf8>,
-    pub eth_seed: Option<SecUtf8>,
+pub struct Password {
     pub password: SecUtf8,
-    pub ton_derivation_path: Option<String>,
-    pub eth_derivation_path: Option<String>,
-    pub eth_node_address: String,
-    pub bridge_contract_address: String, //todo set default address after stabilization
-    pub graphql_endpoint_address: Option<String>,
-    pub adnl_endpoint_address: Option<String>,
-    pub adnl_server_key: Option<String>,
-    pub eth_relay_address: String,
 }
 
 fn init(init_data: Init) -> Result<()> {
@@ -73,25 +94,39 @@ fn init(init_data: Init) -> Result<()> {
     let mut repo = Config::default();
     let env = config::Environment::new();
     repo.merge(env)?;
-    let config: InitData = repo
-        .try_into()
-        .map_err(|e| Error::new(e).context("Failed initializing config: "))?;
-    let parsed_data = parse_init_data(config)?;
-    dbg!(&parsed_data);
-    let eth_private_key =
-        derive_from_words_eth(Language::English, &parsed_data.eth_seed.unsecure(), None)
-            .map_err(|e| e.context("Failed deriving eth private key from seed:"))?;
+    let password = repo
+        .try_into::<Password>()
+        .map_err(|e| Error::new(e).context("Failed initializing config: "))?
+        .pipe(|x| x.password);
 
-    let ton_key_pair =
-        derive_from_words_ton(Language::English, &parsed_data.ton_seed.unsecure(), None)
-            .map_err(|e| e.context("Failed deriving ton private key from seed:"))?;
-    relay::crypto::key_managment::KeyData::init(
-        init_data.generated_config_path,
-        parsed_data.password.into(),
+    let parsed_data = parse_init_data(init_data.clone())?;
+    dbg!(&parsed_data);
+
+    let eth_private_key = derive_from_words_eth(
+        Language::English,
+        &parsed_data.eth_seed.unsecure(),
+        init_data.eth_derivation_path.as_deref(),
+    )
+    .map_err(|e| e.context("Failed deriving eth private key from seed:"))?;
+
+    let ton_key_pair = derive_from_words_ton(
+        Language::English,
+        &parsed_data.ton_seed.unsecure(),
+        init_data.ton_derivation_path.as_deref(),
+    )
+    .map_err(|e| e.context("Failed deriving ton private key from seed:"))?;
+
+    KeyData::init(
+        init_data.crypto_keys_path,
+        password,
         eth_private_key,
         ton_key_pair,
     )
     .map_err(|e| e.context("Failed saving init data:"))?;
+
+    let mut relay_config = relay::config::RelayConfig::default();
+    relay_config.eth_settings.bridge_address = init_data.eth_bridge_address;
+    relay_config.eth_settings.node_address = init_data.eth_node_address;
     Ok(())
 }
 
@@ -109,11 +144,6 @@ enum NetworkingConfig {
 #[derive(Debug)]
 struct ParsedInitData {
     pub network_config: NetworkingConfig,
-    password: SecUtf8,
-
-    staking_account: relay_eth::Address,
-    bridge_contract_address: MsgAddressInt,
-    eth_node_address: Url,
     eth_seed: SecUtf8,
     ton_seed: SecUtf8,
 }
@@ -135,58 +165,36 @@ fn generate_words(entropy: [u8; 16]) -> Result<SecUtf8> {
     Ok(SecUtf8::from(mnemonic))
 }
 
-fn parse_init_data(data: InitData) -> Result<ParsedInitData> {
-    let ton_seed = match data.ton_seed {
+fn parse_init_data(init_data: Init) -> Result<ParsedInitData> {
+    let ton_seed = match init_data.ton_seed {
         None => generate_words(generate_entropy()?)?,
-        Some(a) => a,
+        Some(a) => a.into(),
     };
-    let eth_seed = match data.eth_seed {
+    let eth_seed = match init_data.eth_seed {
         None => generate_words(generate_entropy()?)?,
-        Some(a) => a,
+        Some(a) => a.into(),
     };
-    let eth_node_address: url::Url = data
-        .eth_node_address
-        .parse()
-        .map_err(|e| Error::new(e).context("Failed parsing eth node address as url"))?;
-    if !((data.adnl_endpoint_address.is_some() && data.adnl_server_key.is_some())
-        || (data.graphql_endpoint_address.is_some()))
+
+    if !((init_data.adnl_endpoint_address.is_some() && init_data.adnl_server_key.is_some())
+        || (init_data.graphql_endpoint_address.is_some()))
     {
         anyhow::bail!("ADNL_ENDPOINT_ADDRESS and ADNL_SERVER_KEY or GRAPHQL_ENDPOINT_ADDRESS must be provided")
     }
 
-    let network_config = match data.graphql_endpoint_address {
+    let network_config = match init_data.graphql_endpoint_address {
         None => {
-            let adnl_endpoint_address: SocketAddr = data
-                .adnl_endpoint_address
-                .unwrap()
-                .parse()
-                .map_err(|e| Error::new(e).context("Failed parsing adnl endpoint address:"))?;
-            let andl_pubkey = data.adnl_server_key.unwrap(); //todo add validation
+            let adnl_endpoint_address: SocketAddr = init_data.adnl_endpoint_address.unwrap();
+            let andl_pubkey = init_data.adnl_server_key.unwrap(); //todo add validation
             NetworkingConfig::Adnl {
                 adnl_endpoint_address,
                 andl_pubkey,
             }
         }
-        Some(a) => NetworkingConfig::Gql {
-            endpoint: a
-                .parse()
-                .map_err(|e| Error::new(e).context("Bad gql endpoint address:"))?,
-        },
+        Some(endpoint) => NetworkingConfig::Gql { endpoint },
     };
-    let bridge_contract_address = ton_block::MsgAddressInt::from_str(&data.bridge_contract_address)
-        .map_err(|e| Error::msg(e).context("Failed parsing bridge contract address"))?;
-
-    let staking_account = data
-        .eth_relay_address
-        .pipe(|x| relay_eth::Address::from_str(&x))
-        .map_err(|e| Error::new(e).context("Failed parsing ethereum relay address"))?;
 
     Ok(ParsedInitData {
         network_config,
-        password: data.password,
-        staking_account,
-        bridge_contract_address,
-        eth_node_address,
         eth_seed,
         ton_seed,
     })

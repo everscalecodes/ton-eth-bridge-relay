@@ -60,7 +60,7 @@ pub struct MetricsSettings {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct EthSettings {
     /// Address of ethereum node. Only http is supported right now
-    pub node_address: String,
+    pub node_address: Url,
 
     /// Number of concurrent tcp connection to ethereum node
     pub tcp_connection_count: usize,
@@ -89,7 +89,7 @@ pub struct EthSettings {
 impl Default for EthSettings {
     fn default() -> Self {
         Self {
-            node_address: "http://localhost:8545".into(),
+            node_address: "http://localhost:8545".parse().unwrap(),
             tcp_connection_count: 100,
             get_eth_data_timeout: Duration::from_secs(10),
             get_eth_data_attempts: 50,
