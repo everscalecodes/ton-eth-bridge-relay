@@ -8,7 +8,7 @@ use ed25519_dalek::{ed25519, Keypair, Signer};
 use rand::prelude::*;
 use ring::{digest, pbkdf2};
 use secp256k1::{Message, PublicKey, SecretKey};
-use secstr::{SecStr, SecVec};
+use secstr::{SecUtf8, SecVec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{from_reader, to_writer_pretty};
 use sodiumoxide::crypto::secretbox;
@@ -198,7 +198,7 @@ impl TonSigner {
 }
 
 impl KeyData {
-    pub fn from_file<T>(path: T, password: SecStr) -> Result<Self, Error>
+    pub fn from_file<T>(path: T, password: SecUtf8) -> Result<Self, Error>
     where
         T: AsRef<Path>,
     {
@@ -230,8 +230,8 @@ impl KeyData {
     }
 
     pub fn init<T>(
-        pem_file_path: T,
-        password: SecStr,
+        key_data: T,
+        password: SecUtf8,
         eth_private_key: SecretKey,
         ton_key_pair: ed25519_dalek::Keypair,
     ) -> Result<Self, Error>
@@ -272,7 +272,7 @@ impl KeyData {
             ton_nonce,
         };
 
-        let crypto_config = File::create(pem_file_path)?;
+        let crypto_config = File::create(key_data)?;
         to_writer_pretty(crypto_config, &data)?;
         Ok(Self {
             eth: EthSigner {
@@ -286,13 +286,13 @@ impl KeyData {
     }
 
     ///Calculates symmetric key from user password, using pbkdf2
-    fn symmetric_key_from_password(password: SecStr, salt: &[u8]) -> Key {
+    fn symmetric_key_from_password(password: SecUtf8, salt: &[u8]) -> Key {
         let mut pbkdf2_hash = SecVec::new(vec![0; CREDENTIAL_LEN]);
         pbkdf2::derive(
             pbkdf2::PBKDF2_HMAC_SHA256,
             N_ITER,
             salt,
-            password.unsecure(),
+            password.unsecure().as_bytes(),
             &mut pbkdf2_hash.unsecure_mut(),
         );
         secretbox::Key::from_slice(&pbkdf2_hash.unsecure()).expect("Shouldn't panic")

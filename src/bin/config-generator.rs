@@ -1,18 +1,18 @@
-use std::convert::TryInto;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Error, Result};
+use bip39::Language;
 use clap::Clap;
 use config::Config;
 use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
-use tap::{Pipe, Tap};
+use tap::Pipe;
+use ton_block::MsgAddressInt;
 use url::Url;
 
-use relay::config::RelayConfig;
+use relay::crypto::recovery::{derive_from_words_eth, derive_from_words_ton};
 use relay::prelude::FromStr;
-use ton_block::MsgAddressInt;
 
 #[derive(Clap, Debug)]
 struct Opts {
@@ -32,7 +32,7 @@ struct Backup {}
 
 #[derive(Clap, Debug)]
 struct Init {
-    #[clap(default_value = "./relay-config.yaml")]
+    #[clap(default_value = "./relay-keys.json")]
     #[clap(long, short)]
     generated_config_path: PathBuf,
 }
@@ -48,7 +48,6 @@ fn main() -> Result<()> {
         Subcommand::Restore(_) => Ok(()),
         Subcommand::Backup(_) => Ok(()),
     }?;
-    let repo = config::Environment::new();
     Ok(())
 }
 
@@ -68,16 +67,6 @@ pub struct InitData {
     pub eth_relay_address: String,
 }
 
-#[derive(Debug)]
-struct ParsedInitData {
-    pub network_config: NetworkingConfig,
-    password: SecUtf8,
-
-    staking_account: relay_eth::Address,
-    bridge_contract_address: MsgAddressInt,
-    eth_node_address: Url,
-}
-
 fn init(init_data: Init) -> Result<()> {
     // use relay_models::models::InitData;
 
@@ -88,13 +77,21 @@ fn init(init_data: Init) -> Result<()> {
         .try_into()
         .map_err(|e| Error::new(e).context("Failed initializing config: "))?;
     let parsed_data = parse_init_data(config)?;
-    dbg!(parsed_data);
-    // let  ton_seed: String,
-    // pub eth_seed: String,
-    // pub password: String,
-    // pub language: String,
-    // pub ton_derivation_path: Option<String>,
-    // pub eth_derivation_path: Option<String>,
+    dbg!(&parsed_data);
+    let eth_private_key =
+        derive_from_words_eth(Language::English, &parsed_data.eth_seed.unsecure(), None)
+            .map_err(|e| e.context("Failed deriving eth private key from seed:"))?;
+
+    let ton_key_pair =
+        derive_from_words_ton(Language::English, &parsed_data.ton_seed.unsecure(), None)
+            .map_err(|e| e.context("Failed deriving ton private key from seed:"))?;
+    relay::crypto::key_managment::KeyData::init(
+        init_data.generated_config_path,
+        parsed_data.password.into(),
+        eth_private_key,
+        ton_key_pair,
+    )
+    .map_err(|e| e.context("Failed saving init data:"))?;
     Ok(())
 }
 
@@ -109,10 +106,43 @@ enum NetworkingConfig {
     },
 }
 
+#[derive(Debug)]
+struct ParsedInitData {
+    pub network_config: NetworkingConfig,
+    password: SecUtf8,
+
+    staking_account: relay_eth::Address,
+    bridge_contract_address: MsgAddressInt,
+    eth_node_address: Url,
+    eth_seed: SecUtf8,
+    ton_seed: SecUtf8,
+}
+
+fn generate_entropy<const N: usize>() -> Result<[u8; N], Error> {
+    use ring::rand::SecureRandom;
+
+    let rng = ring::rand::SystemRandom::new();
+
+    let mut entropy = [0; N];
+    rng.fill(&mut entropy).map_err(|e| Error::msg(e))?;
+    Ok(entropy)
+}
+
+fn generate_words(entropy: [u8; 16]) -> Result<SecUtf8> {
+    let mnemonic = bip39::Mnemonic::from_entropy(&entropy, Language::English)
+        .map_err(|e| Error::msg(e).context("Failed generating mnemonic"))?
+        .into_phrase();
+    Ok(SecUtf8::from(mnemonic))
+}
+
 fn parse_init_data(data: InitData) -> Result<ParsedInitData> {
     let ton_seed = match data.ton_seed {
-        None => {}
-        Some(a) => {}
+        None => generate_words(generate_entropy()?)?,
+        Some(a) => a,
+    };
+    let eth_seed = match data.eth_seed {
+        None => generate_words(generate_entropy()?)?,
+        Some(a) => a,
     };
     let eth_node_address: url::Url = data
         .eth_node_address
@@ -157,5 +187,7 @@ fn parse_init_data(data: InitData) -> Result<ParsedInitData> {
         staking_account,
         bridge_contract_address,
         eth_node_address,
+        eth_seed,
+        ton_seed,
     })
 }
