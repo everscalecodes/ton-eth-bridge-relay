@@ -386,6 +386,7 @@ dependencies = [
  "os_str_bytes",
  "strsim",
  "termcolor",
+ "terminal_size",
  "textwrap",
  "unicode-width",
  "vec_map",
@@ -2460,6 +2461,7 @@ dependencies = [
  "ton_types",
  "ton_vm",
  "tonlib",
+ "url",
 ]
 
 [[package]]
@@ -2972,6 +2974,7 @@ version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "203008d98caf094106cfaba70acfed15e18ed3ddb7d94e49baec153a2b462789"
 dependencies = [
+ "terminal_size",
  "unicode-width",
 ]
 

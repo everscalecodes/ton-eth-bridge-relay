@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    pub address: String,
+    pub address: Url,
 
     #[serde(with = "relay_utils::serde_time")]
     pub next_block_timeout: Duration,
@@ -21,7 +22,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            address: "https://main.ton.dev/graphql".to_owned(),
+            address: "https://main.ton.dev/graphql".parse().unwrap(),
             next_block_timeout: Duration::from_secs(60),
             fetch_timeout: Duration::from_secs(10),
             retry_delay: default_retry_delay(),

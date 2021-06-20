@@ -12,16 +12,17 @@ use ton_block::{
 use crate::prelude::*;
 use crate::transport::errors::*;
 use crate::transport::TransportError::ApiFailure;
+use url::Url;
 
 pub struct NodeClient {
     client: Client,
-    endpoint: String,
+    endpoint: Url,
     concurrency_limiter: Arc<Semaphore>,
     fetch_timeout: Duration,
 }
 
 impl NodeClient {
-    pub fn new(endpoint: String, parallel_connections: usize, timeout: Duration) -> Self {
+    pub fn new(endpoint: Url, parallel_connections: usize, timeout: Duration) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
@@ -51,7 +52,7 @@ impl NodeClient {
         let permit = self.concurrency_limiter.acquire().await;
         let response = self
             .client
-            .post(&self.endpoint)
+            .post(self.endpoint.as_str())
             .json(&request_body)
             .timeout(self.fetch_timeout)
             .send()
@@ -89,7 +90,7 @@ impl NodeClient {
         let request_body = T::build_query(params);
         let response = self
             .client
-            .post(&self.endpoint)
+            .post(self.endpoint.as_str())
             .timeout(timeout)
             .json(&request_body)
             .send()

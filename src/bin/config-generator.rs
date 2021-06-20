@@ -10,8 +10,15 @@ use serde::{Deserialize, Serialize};
 use tap::Pipe;
 use url::Url;
 
+use relay::config::TonTransportConfig;
 use relay::crypto::key_managment::KeyData;
 use relay::crypto::recovery::{derive_from_words_eth, derive_from_words_ton};
+// #[cfg(feature = "graphql-transport")]
+// use relay_ton::transport::graphql_transport::Config as TonGraphQLConfig;
+// #[cfg(feature = "graphql-transport")]
+// use relay_ton::transport::tonlib_transport::default_mainnet_config;
+// #[cfg(feature = "tonlib-transport")]
+// use relay_ton::transport::tonlib_transport::Config as TonTonlibConfig;
 
 #[derive(Clap, Debug)]
 struct Opts {
@@ -54,10 +61,13 @@ struct Init {
     //todo set default address after stabilization
     pub ton_bridge_contract_address: ton_block::MsgAddressInt,
     #[clap(long)]
-    #[clap(group = "transport")]
+    // #[clap(group = "transport")]
+    #[clap(required_unless_present = "adnl-endpoint-address")]
     pub graphql_endpoint_address: Option<Url>,
     #[clap(long)]
-    #[clap(group = "transport", required(true))]
+    // #[clap(group = "transport", required(true))]
+    #[clap(required_unless_present = "graphql-endpoint-address")]
+    #[cfg(feature = "tonlib-transport")]
     #[clap(requires = "adnl-server-key")]
     pub adnl_endpoint_address: Option<SocketAddr>,
     #[clap(long)]
@@ -117,7 +127,7 @@ fn init(init_data: Init) -> Result<()> {
     .map_err(|e| e.context("Failed deriving ton private key from seed:"))?;
 
     KeyData::init(
-        init_data.crypto_keys_path,
+        &init_data.crypto_keys_path,
         password,
         eth_private_key,
         ton_key_pair,
@@ -127,23 +137,18 @@ fn init(init_data: Init) -> Result<()> {
     let mut relay_config = relay::config::RelayConfig::default();
     relay_config.eth_settings.bridge_address = init_data.eth_bridge_address;
     relay_config.eth_settings.node_address = init_data.eth_node_address;
+    relay_config.keys_path = init_data.crypto_keys_path;
+    relay_config.ton_settings.bridge_contract_address = init_data
+        .ton_bridge_contract_address
+        .pipe(|x| x.to_string())
+        .pipe(relay::config::TonAddress);
+    // relay_config.ton_settings.transport = parsed_data.network_config;
     Ok(())
 }
 
 #[derive(Debug)]
-enum NetworkingConfig {
-    Adnl {
-        adnl_endpoint_address: SocketAddr,
-        andl_pubkey: String,
-    },
-    Gql {
-        endpoint: Url,
-    },
-}
-
-#[derive(Debug)]
 struct ParsedInitData {
-    pub network_config: NetworkingConfig,
+    // pub network_config: TonTransportConfig,
     eth_seed: SecUtf8,
     ton_seed: SecUtf8,
 }
@@ -181,20 +186,26 @@ fn parse_init_data(init_data: Init) -> Result<ParsedInitData> {
         anyhow::bail!("ADNL_ENDPOINT_ADDRESS and ADNL_SERVER_KEY or GRAPHQL_ENDPOINT_ADDRESS must be provided")
     }
 
-    let network_config = match init_data.graphql_endpoint_address {
-        None => {
-            let adnl_endpoint_address: SocketAddr = init_data.adnl_endpoint_address.unwrap();
-            let andl_pubkey = init_data.adnl_server_key.unwrap(); //todo add validation
-            NetworkingConfig::Adnl {
-                adnl_endpoint_address,
-                andl_pubkey,
-            }
-        }
-        Some(endpoint) => NetworkingConfig::Gql { endpoint },
-    };
+    // let network_config = match init_data.graphql_endpoint_address {
+    //     None => {
+    //         #[cfg(feature = "tonlib-transport")]
+    //         {
+    //             let adnl_endpoint_address: SocketAddr = init_data.adnl_endpoint_address.unwrap();
+    //             let andl_pubkey = init_data.adnl_server_key.unwrap(); //todo add validation
+    //             let mut config = default_mainnet_config();
+    //             config.server_address = adnl_endpoint_address;
+    //             config.server_key = andl_pubkey;
+    //             TonTransportConfig::Tonlib(config)
+    //
+    //     }
+    //     Some(endpoint) => {
+    //         let mut config = TonGraphQLConfig::default();
+    //         config.address = endpoint;
+    //     }
+    // };
 
     Ok(ParsedInitData {
-        network_config,
+        // network_config,
         eth_seed,
         ton_seed,
     })
