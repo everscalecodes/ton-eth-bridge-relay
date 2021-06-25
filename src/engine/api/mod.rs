@@ -410,6 +410,8 @@ async fn wait_for_init(
         data.password.into(),
         eth_private_key,
         ton_key_pair,
+        data.ton_seed.into(),
+        data.eth_seed.into(),
     ) {
         Ok(key_data) => key_data,
         Err(e) => {

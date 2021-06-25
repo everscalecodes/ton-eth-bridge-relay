@@ -10,11 +10,12 @@ use ring::{digest, pbkdf2};
 use secp256k1::{Message, PublicKey, SecretKey};
 use secstr::{SecUtf8, SecVec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{from_reader, to_writer_pretty};
 use sodiumoxide::crypto::secretbox;
 use sodiumoxide::crypto::secretbox::{Key, Nonce};
 
 use crate::prelude::*;
+use anyhow::Result;
+use tap::Pipe;
 
 const CREDENTIAL_LEN: usize = digest::SHA256_OUTPUT_LEN;
 
@@ -68,81 +69,107 @@ impl Debug for EthSigner {
 
 ///Data, stored on disk in `encrypted_data` filed of config.
 #[derive(Serialize, Deserialize)]
-struct CryptoData {
-    #[serde(serialize_with = "buffer_to_hex", deserialize_with = "hex_to_buffer")]
+pub struct CryptoData {
+    #[serde(with = "serde_hex")]
     salt: Vec<u8>,
-
-    #[serde(
-        serialize_with = "serialize_pubkey",
-        deserialize_with = "deserialize_pubkey"
-    )]
+    #[serde(with = "serde_pubkey")]
     eth_pubkey: PublicKey,
-    #[serde(serialize_with = "buffer_to_hex", deserialize_with = "hex_to_buffer")]
+    #[serde(with = "serde_hex")]
     eth_encrypted_private_key: Vec<u8>,
-    #[serde(
-        serialize_with = "serialize_nonce",
-        deserialize_with = "deserialize_nonce"
-    )]
+    #[serde(with = "serde_nonce")]
     eth_nonce: Nonce,
-
-    #[serde(serialize_with = "buffer_to_hex", deserialize_with = "hex_to_buffer")]
+    #[serde(with = "serde_hex")]
     ton_encrypted_private_key: Vec<u8>,
-    #[serde(
-        serialize_with = "serialize_nonce",
-        deserialize_with = "deserialize_nonce"
-    )]
+    #[serde(with = "serde_nonce")]
     ton_nonce: Nonce,
+    #[serde(with = "serde_nonce")]
+    ton_phrase_nonce: Nonce,
+    #[serde(with = "serde_hex")]
+    ton_encrypted_phrase: Vec<u8>,
+    #[serde(with = "serde_nonce")]
+    eth_phrase_nonce: Nonce,
+    #[serde(with = "serde_hex")]
+    eth_encrypted_phrase: Vec<u8>,
 }
 
-/// Serializes `buffer` to a lowercase hex string.
-pub fn buffer_to_hex<T, S>(buffer: &T, serializer: S) -> Result<S::Ok, S::Error>
-where
-    T: AsRef<[u8]> + ?Sized,
-    S: Serializer,
-{
-    serializer.serialize_str(&*hex::encode(&buffer.as_ref()))
+impl CryptoData {
+    ///Returns ton phrase, eth phrase
+    pub fn recover(&self, password: SecUtf8) -> Result<(SecUtf8, SecUtf8)> {
+        let key = KeyData::symmetric_key_from_password(password, &self.salt);
+        Ok((
+            secretbox::open(&self.ton_encrypted_phrase, &self.ton_phrase_nonce, &key)
+                .map_err(|_| anyhow!("Failed decrypting ton phrase"))
+                .and_then(|x| String::from_utf8(x).map_err(Error::new))
+                .map(SecUtf8::from)?,
+            secretbox::open(&self.eth_encrypted_phrase, &self.eth_phrase_nonce, &key)
+                .map_err(|_| anyhow!("Failed decrypting eth phrase"))
+                .and_then(|x| String::from_utf8(x).map_err(anyhow::Error::new))
+                .map(SecUtf8::from)?,
+        ))
+    }
 }
 
-/// Deserializes a lowercase hex string to a `Vec<u8>`.
-pub fn hex_to_buffer<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::Error;
-    <String as serde::Deserialize>::deserialize(deserializer)
-        .and_then(|string| hex::decode(string).map_err(|e| D::Error::custom(e.to_string())))
+mod serde_hex {
+    use super::*;
+
+    /// Serializes `buffer` to a lowercase hex string.
+    pub fn serialize<T, S>(buffer: &T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: AsRef<[u8]> + ?Sized,
+        S: Serializer,
+    {
+        serializer.serialize_str(&*hex::encode(&buffer.as_ref()))
+    }
+
+    /// Deserializes a lowercase hex string to a `Vec<u8>`.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        <String as serde::Deserialize>::deserialize(deserializer)
+            .and_then(|string| hex::decode(string).map_err(|e| D::Error::custom(e.to_string())))
+    }
 }
 
-fn serialize_pubkey<S>(t: &PublicKey, ser: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    buffer_to_hex(&t.serialize(), ser)
+mod serde_pubkey {
+    use super::*;
+
+    pub fn serialize<S>(t: &PublicKey, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_hex::serialize(&t.serialize(), ser)
+    }
+    pub fn deserialize<'de, D>(deser: D) -> Result<PublicKey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        serde_hex::deserialize(deser).and_then(|x| {
+            PublicKey::from_slice(&*x).map_err(|e| serde::de::Error::custom(e.to_string()))
+        })
+    }
 }
 
-fn serialize_nonce<S>(t: &Nonce, ser: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    buffer_to_hex(&t[..], ser)
-}
+mod serde_nonce {
+    use super::*;
 
-fn deserialize_nonce<'de, D>(deser: D) -> Result<Nonce, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    hex_to_buffer(deser).and_then(|x| {
-        Nonce::from_slice(&*x).ok_or_else(|| serde::de::Error::custom("Failed deserializing nonce"))
-    })
-}
+    pub fn serialize<S>(t: &Nonce, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_hex::serialize(&t[..], ser)
+    }
 
-fn deserialize_pubkey<'de, D>(deser: D) -> Result<PublicKey, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    hex_to_buffer(deser).and_then(|x| {
-        PublicKey::from_slice(&*x).map_err(|e| serde::de::Error::custom(e.to_string()))
-    })
+    pub fn deserialize<'de, D>(deser: D) -> Result<Nonce, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        serde_hex::deserialize(deser).and_then(|x| {
+            Nonce::from_slice(&*x)
+                .ok_or_else(|| serde::de::Error::custom("Failed deserializing nonce"))
+        })
+    }
 }
 
 impl EthSigner {
@@ -203,7 +230,7 @@ impl KeyData {
         T: AsRef<Path>,
     {
         let file = File::open(&path)?;
-        let crypto_data: CryptoData = from_reader(&file)?;
+        let crypto_data: CryptoData = serde_json::from_reader(&file)?;
         let sym_key = Self::symmetric_key_from_password(password, &*crypto_data.salt);
 
         let eth_private_key = Self::eth_private_key_from_encrypted(
@@ -229,11 +256,21 @@ impl KeyData {
         })
     }
 
+    fn encrypt<T>(data: T, key: &Key) -> (Vec<u8>, Nonce)
+    where
+        T: AsRef<[u8]>,
+    {
+        let nonce = secretbox::gen_nonce();
+        (secretbox::seal(data.as_ref(), &nonce, key), nonce)
+    }
+
     pub fn init<T>(
         key_data: T,
         password: SecUtf8,
         eth_private_key: SecretKey,
         ton_key_pair: ed25519_dalek::Keypair,
+        ton_seed: SecUtf8,
+        eth_seed: SecUtf8,
     ) -> Result<Self, Error>
     where
         T: AsRef<Path>,
@@ -246,21 +283,19 @@ impl KeyData {
         let key = Self::symmetric_key_from_password(password, &salt);
 
         // ETH
-        let (eth_pubkey, eth_encrypted_private_key, eth_nonce) = {
+        let (eth_pubkey, (eth_encrypted_private_key, eth_nonce)) = {
             let curve = secp256k1::Secp256k1::new();
 
             let public = PublicKey::from_secret_key(&curve, &eth_private_key);
-            let nonce = secretbox::gen_nonce();
-            let private_key = secretbox::seal(&eth_private_key[..], &nonce, &key);
-            (public, private_key, nonce)
+            (public, Self::encrypt(&eth_private_key[..], &key))
         };
 
         // TON
-        let (ton_encrypted_private_key, ton_nonce) = {
-            let nonce = secretbox::gen_nonce();
-            let private_key = secretbox::seal(ton_key_pair.secret.as_bytes(), &nonce, &key);
-            (private_key, nonce)
-        };
+        let (ton_encrypted_private_key, ton_nonce) = Self::encrypt(&ton_key_pair.secret, &key);
+        // Eth seed
+        let (eth_encrypted_phrase, eth_phrase_nonce) = Self::encrypt(&ton_seed.unsecure(), &key);
+        // Ton seed
+        let (ton_encrypted_phrase, ton_phrase_nonce) = Self::encrypt(&eth_seed.unsecure(), &key);
 
         //
         let data = CryptoData {
@@ -270,10 +305,14 @@ impl KeyData {
             eth_nonce,
             ton_encrypted_private_key,
             ton_nonce,
+            ton_phrase_nonce,
+            ton_encrypted_phrase,
+            eth_phrase_nonce,
+            eth_encrypted_phrase,
         };
 
         let crypto_config = File::create(key_data)?;
-        to_writer_pretty(crypto_config, &data)?;
+        serde_json::to_writer_pretty(crypto_config, &data)?;
         Ok(Self {
             eth: EthSigner {
                 private_key: eth_private_key,

@@ -337,8 +337,8 @@ pub fn prepare_ton_event_payload(
     let event_data = ton_tokens_to_ethereum_bytes(event.tokens.clone());
 
     let tuple = EthTokenValue::Tuple(vec![
-        map_ton_to_eth(event.event_transaction.clone().token_value())?,
-        map_ton_to_eth(event.event_transaction_lt.clone().token_value())?,
+        map_ton_to_eth(event.event_transaction.token_value())?,
+        map_ton_to_eth(event.event_transaction_lt.token_value())?,
         map_ton_to_eth(event.event_timestamp.token_value())?,
         map_ton_to_eth(event.event_index.token_value())?,
         map_ton_to_eth(event_data.token_value())?,
