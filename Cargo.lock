@@ -2424,6 +2424,7 @@ dependencies = [
  "futures",
  "log",
  "once_cell",
+ "relay-utils",
  "serde 1.0.126",
  "serde_json",
  "sha3",
@@ -2491,6 +2492,7 @@ dependencies = [
  "serde 1.0.126",
  "serde_yaml",
  "tokio",
+ "tryhard",
 ]
 
 [[package]]

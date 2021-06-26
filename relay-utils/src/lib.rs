@@ -4,6 +4,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use http::uri::PathAndQuery;
+use std::future::Future;
+use tryhard::backoff_strategies::BackoffStrategy;
+use tryhard::{RetryFutureConfig, RetryPolicy};
 
 pub mod serde_url {
     use super::*;
@@ -105,6 +108,33 @@ pub mod serde_time {
             }
         }
     }
+}
+
+/// retries future, logging unsuccessful retries with `message`
+pub async fn retry<MakeFutureT, T, E, Fut, BackoffT, OnRetryT>(
+    producer: MakeFutureT,
+    config: RetryFutureConfig<BackoffT, OnRetryT>,
+    message: &'static str,
+) -> Result<T, E>
+where
+    MakeFutureT: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::error::Error,
+    for<'a> BackoffT: BackoffStrategy<'a, E>,
+    for<'a> <BackoffT as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
+{
+    let config = config.on_retry(|attempt, next_delay, error: &E| {
+        log::error!(
+            "Retrying {} with {} attempt. Next delay: {:?}. Error: {:?}",
+            message,
+            attempt,
+            next_delay,
+            error
+        );
+        std::future::ready(())
+    });
+    let res = tryhard::retry_fn(producer).with_config(config).await;
+    res
 }
 
 #[cfg(test)]

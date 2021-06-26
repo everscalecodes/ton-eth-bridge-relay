@@ -2,11 +2,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Error};
+use futures::Future;
+use relay_utils::retry;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use sled::{Db, Tree};
@@ -14,9 +17,9 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 use tokio_stream::Stream;
-use tryhard::RetryFutureConfig;
 use url::Url;
 use web3::transports::http::Http;
+use web3::types::Res;
 pub use web3::types::SyncState;
 pub use web3::types::{Address, BlockNumber, H256};
 pub use web3::types::{FilterBuilder, Log, H160};
@@ -27,26 +30,9 @@ const ETH_LAST_MET_HEIGHT: &str = "last_met_height";
 
 macro_rules! retry_cfg {
     ($retries:literal) => {
-        RetryFutureConfig::new($retries)
+        ::tryhard::RetryFutureConfig::new($retries)
             .exponential_backoff(Duration::from_secs(1))
             .max_delay(Duration::from_secs(600))
-    };
-}
-
-macro_rules! retry {
-    ($expression:expr,$config:expr,$name:literal) => {
-        ::tryhard::retry_fn(|| $expression).with_config($config.on_retry(
-            |_attempt, _next_delay, error| {
-                ::log::error!(
-                    "Retrying {} with {} attempt. Next delay: {:?}. Error: {:?}",
-                    $name,
-                    _attempt,
-                    _next_delay,
-                    error
-                );
-                std::future::ready(())
-            },
-        ))
     };
 }
 
@@ -229,10 +215,10 @@ impl EthListener {
             // Trying to get data. Retrying in case of error
             let _permission = self.connections_pool.acquire().await;
 
-            match retry!(
-                self.web3.eth().transaction_receipt(hash),
+            match retry(
+                || self.web3.eth().transaction_receipt(hash),
                 retry_cfg!(1000),
-                "get transaction receipt"
+                "get transaction receipt",
             )
             .await
             {
