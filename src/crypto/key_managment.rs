@@ -15,7 +15,6 @@ use sodiumoxide::crypto::secretbox::{Key, Nonce};
 
 use crate::prelude::*;
 use anyhow::Result;
-use tap::Pipe;
 
 const CREDENTIAL_LEN: usize = digest::SHA256_OUTPUT_LEN;
 
