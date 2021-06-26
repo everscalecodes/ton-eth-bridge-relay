@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -6,7 +7,6 @@ use anyhow::Error;
 use clap::Clap;
 use config::{Config, File, FileFormat};
 use http::uri::PathAndQuery;
-
 #[cfg(feature = "graphql-transport")]
 use relay_ton::transport::graphql_transport::Config as TonGraphQLConfig;
 #[cfg(feature = "tonlib-transport")]

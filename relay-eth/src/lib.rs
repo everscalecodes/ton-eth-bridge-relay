@@ -1,3 +1,5 @@
+#![deny(clippy::unwrap_used)]
+
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,14 +14,41 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 use tokio_stream::Stream;
+use tryhard::RetryFutureConfig;
 use url::Url;
 use web3::transports::http::Http;
 pub use web3::types::SyncState;
 pub use web3::types::{Address, BlockNumber, H256};
 pub use web3::types::{FilterBuilder, Log, H160};
 use web3::{Transport, Web3};
+
 const ETH_TREE_NAME: &str = "ethereum_data";
 const ETH_LAST_MET_HEIGHT: &str = "last_met_height";
+
+macro_rules! retry_cfg {
+    ($retries:literal) => {
+        RetryFutureConfig::new($retries)
+            .exponential_backoff(Duration::from_secs(1))
+            .max_delay(Duration::from_secs(600))
+    };
+}
+
+macro_rules! retry {
+    ($expression:expr,$config:expr,$name:literal) => {
+        ::tryhard::retry_fn(|| $expression).with_config($config.on_retry(
+            |_attempt, _next_delay, error| {
+                ::log::error!(
+                    "Retrying {} with {} attempt. Next delay: {:?}. Error: {:?}",
+                    $name,
+                    _attempt,
+                    _next_delay,
+                    error
+                );
+                std::future::ready(())
+            },
+        ))
+    };
+}
 
 #[derive(Copy, Clone)]
 struct Timeouts {
@@ -199,7 +228,14 @@ impl EthListener {
         loop {
             // Trying to get data. Retrying in case of error
             let _permission = self.connections_pool.acquire().await;
-            match self.web3.eth().transaction_receipt(hash).await {
+
+            match retry!(
+                self.web3.eth().transaction_receipt(hash),
+                retry_cfg!(1000),
+                "get transaction receipt"
+            )
+            .await
+            {
                 Ok(a) => {
                     return match a {
                         //if no tx with this hash

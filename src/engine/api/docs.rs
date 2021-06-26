@@ -143,5 +143,6 @@ pub fn swagger() -> String {
             }
         }
     };
+    #[allow(clippy::unwrap_used)]
     serde_yaml::to_string(&api).unwrap()
 }

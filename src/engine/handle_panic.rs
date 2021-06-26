@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use std::{
     panic::{self, PanicInfo},
     process, thread, time,
