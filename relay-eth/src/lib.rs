@@ -2,14 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Error};
-use futures::Future;
-use relay_utils::retry;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use sled::{Db, Tree};
@@ -17,6 +14,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 use tokio_stream::Stream;
+use tryhard::backoff_strategies::ExponentialBackoff;
+use tryhard::{NoOnRetry, RetryFutureConfig};
 use url::Url;
 use web3::transports::http::Http;
 use web3::types::Res;
@@ -24,6 +23,8 @@ pub use web3::types::SyncState;
 pub use web3::types::{Address, BlockNumber, H256};
 pub use web3::types::{FilterBuilder, Log, H160};
 use web3::{Transport, Web3};
+
+use relay_utils::retry;
 
 const ETH_TREE_NAME: &str = "ethereum_data";
 const ETH_LAST_MET_HEIGHT: &str = "last_met_height";
@@ -217,7 +218,7 @@ impl EthListener {
 
             match retry(
                 || self.web3.eth().transaction_receipt(hash),
-                retry_cfg!(1000),
+                generate_default_timeout_config(Duration::from_secs(86400)),
                 "get transaction receipt",
             )
             .await
@@ -269,8 +270,10 @@ impl EthListener {
                     };
                 }
                 Err(e) => {
-                    log::error!("Failed fetching info from eth node: {}", e);
-                    tokio::time::sleep(self.timeouts.get_eth_data_timeout).await;
+                    panic!(
+                        "Failed fetching info from eth node in 1 day. Last error: {}",
+                        e
+                    );
                 }
             }
         }
@@ -628,4 +631,21 @@ fn update_eth_state(db: &Tree, height: u64, key: &str) -> Result<(), Error> {
 pub fn update_height(db: &Tree, height: u64) -> Result<(), Error> {
     update_eth_state(&db, height, ETH_LAST_MET_HEIGHT)?;
     Ok(())
+}
+
+#[inline]
+fn generate_default_timeout_config(
+    total_time: Duration,
+) -> RetryFutureConfig<ExponentialBackoff, NoOnRetry> {
+    let max_delay = Duration::from_secs(600);
+    let times = relay_utils::calculate_times_from_max_delay(
+        Duration::from_secs(1),
+        2f64,
+        max_delay,
+        total_time,
+    );
+    let cfg = tryhard::RetryFutureConfig::new(times)
+        .exponential_backoff(Duration::from_secs(1))
+        .max_delay(Duration::from_secs(600));
+    cfg
 }

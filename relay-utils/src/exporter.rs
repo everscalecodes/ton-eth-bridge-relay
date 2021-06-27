@@ -220,6 +220,8 @@ impl<'a, 'b> PrometheusFormatter<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::time::advance;
 
     struct StrangeMetrics {
         now: u64,
@@ -236,15 +238,20 @@ mod tests {
     #[tokio::test]
     async fn test_exporter() {
         let exporter = MetricsExporter::new("0.0.0.0:9090".parse().unwrap());
-
-        tokio::spawn(exporter.clone().listen());
-
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(
+            exporter
+                .clone()
+                .listen(PathAndQuery::from_static("/test"), receiver),
+        );
+        tokio::time::pause();
         for now in 0..5 {
             let mut buffer = exporter.acquire_buffer().await;
 
             buffer.write(StrangeMetrics { now });
 
-            tokio::time::delay_for(tokio::time::Duration::from_secs(10)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            advance(Duration::from_secs(10)).await;
         }
     }
 }

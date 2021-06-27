@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 humantime = "2.1"
-hyper = "0.14.7"
+hyper = { version = "0.14", features = ["full"] }
 http = "0.2"
 futures = "0.3.6"
 log = "0.4"
