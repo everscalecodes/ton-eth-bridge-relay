@@ -28,13 +28,12 @@ use relay_utils::retry;
 const ETH_TREE_NAME: &str = "ethereum_data";
 const ETH_LAST_MET_HEIGHT: &str = "last_met_height";
 
-#[derive(Copy, Clone)]
-struct Timeouts {
-    get_eth_data_timeout: Duration,
-    get_eth_data_attempts: u32,
-    maximum_failed_responses_time: Duration,
-    eth_poll_interval: Duration,
-    eth_poll_attempts: u64,
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct Timeouts {
+    pub get_eth_data_timeout: Duration,
+    pub get_eth_data_attempts: u32,
+    pub maximum_failed_responses_time: Duration,
+    pub eth_poll_interval: Duration,
 }
 
 pub struct EthListener {
@@ -132,16 +131,12 @@ impl SyncedHeight {
 }
 
 impl EthListener {
-    #[allow(clippy::too_many_arguments)]
     //todo move to  config
     pub async fn new(
         url: Url,
         db: Db,
         connections_number: usize,
-        get_eth_data_timeout: Duration,
-        get_eth_data_attempts: u32,
-        eth_poll_interval: Duration,
-        eth_poll_attempts: u64,
+        timeouts: Timeouts,
         bridge_address: Address,
     ) -> Result<Self, Error> {
         let connection = Http::new(url.as_str()).expect("Failed connecting to ethereum node");
@@ -159,13 +154,7 @@ impl EthListener {
             connections_pool: Arc::new(Semaphore::new(connections_number)),
             current_block: Arc::new(AtomicU64::new(current_block)),
             relay_keys_function_to_topic_map: relay_keys_abi,
-            timeouts: Timeouts {
-                get_eth_data_timeout,
-                get_eth_data_attempts,
-                maximum_failed_responses_time: Duration::from_secs(86400),
-                eth_poll_interval,
-                eth_poll_attempts,
-            },
+            timeouts,
             bridge_address,
         };
         // dbg!(listener.get_actual_keys().await?); //todo use it

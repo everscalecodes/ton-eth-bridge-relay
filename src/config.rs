@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -7,6 +8,7 @@ use anyhow::Error;
 use clap::Clap;
 use config::{Config, File, FileFormat};
 use http::uri::PathAndQuery;
+
 #[cfg(feature = "graphql-transport")]
 use relay_ton::transport::graphql_transport::Config as TonGraphQLConfig;
 #[cfg(feature = "tonlib-transport")]
@@ -78,6 +80,8 @@ pub struct EthSettings {
 
     /// Number of attempts to get logs in the block
     pub eth_poll_attempts: u64,
+    /// The time after which we think the ethereum node is broken and fall into a panic
+    pub maximum_failed_responses_time: Duration,
 
     /// Offset in blocks for checking suspicious transactions
     pub suspicious_blocks_offset: u64,
@@ -95,6 +99,7 @@ impl Default for EthSettings {
             get_eth_data_attempts: 50,
             eth_poll_interval: Duration::from_secs(10),
             eth_poll_attempts: 86400 / 10,
+            maximum_failed_responses_time: Duration::from_secs(86400),
             suspicious_blocks_offset: 10,
             bridge_address: Default::default(),
         }
