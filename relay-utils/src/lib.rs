@@ -119,7 +119,7 @@ pub async fn retry<MakeFutureT, T, E, Fut, BackoffT, OnRetryT>(
 where
     MakeFutureT: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
-    E: std::error::Error,
+    E: std::fmt::Debug,
     for<'a> BackoffT: BackoffStrategy<'a, E>,
     for<'a> <BackoffT as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
 {

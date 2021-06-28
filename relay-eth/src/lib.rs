@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Result};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use sled::{Db, Tree};
@@ -14,11 +14,10 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 use tokio_stream::Stream;
-use tryhard::backoff_strategies::ExponentialBackoff;
+use tryhard::backoff_strategies::{ExponentialBackoff, FixedBackoff};
 use tryhard::{NoOnRetry, RetryFutureConfig};
 use url::Url;
 use web3::transports::http::Http;
-use web3::types::Res;
 pub use web3::types::SyncState;
 pub use web3::types::{Address, BlockNumber, H256};
 pub use web3::types::{FilterBuilder, Log, H160};
@@ -29,18 +28,11 @@ use relay_utils::retry;
 const ETH_TREE_NAME: &str = "ethereum_data";
 const ETH_LAST_MET_HEIGHT: &str = "last_met_height";
 
-macro_rules! retry_cfg {
-    ($retries:literal) => {
-        ::tryhard::RetryFutureConfig::new($retries)
-            .exponential_backoff(Duration::from_secs(1))
-            .max_delay(Duration::from_secs(600))
-    };
-}
-
 #[derive(Copy, Clone)]
 struct Timeouts {
     get_eth_data_timeout: Duration,
-    get_eth_data_attempts: u64,
+    get_eth_data_attempts: u32,
+    maximum_failed_responses_time: Duration,
     eth_poll_interval: Duration,
     eth_poll_attempts: u64,
 }
@@ -60,7 +52,7 @@ async fn get_actual_eth_height<T: Transport>(
     w3: &Web3<T>,
     connection_pool: &Arc<Semaphore>,
     get_eth_data_timeout: Duration,
-) -> Option<u64> {
+) -> Result<u64> {
     use tokio::time::timeout;
     log::debug!("Getting height");
     let _permission = connection_pool.acquire().await;
@@ -69,22 +61,19 @@ async fn get_actual_eth_height<T: Transport>(
             Ok(a) => {
                 let height = a.as_u64();
                 log::debug!("Got height: {}", height);
-                Some(height)
+                Ok(height)
             }
             Err(e) => {
                 if let web3::error::Error::Transport(e) = &e {
                     if e == "hyper::Error(IncompleteMessage)" {
-                        log::debug!("Failed getting height: {}", e);
-                        return None;
+                        anyhow::bail!("Failed getting height: {}", e);
                     }
                 }
-                log::error!("Failed getting block number: {:?}", e);
-                None
+                anyhow::bail!("Failed getting block number: {:?}", e);
             }
         },
         Err(e) => {
-            log::error!("Timed out on getting actual eth block number: {:?}", e);
-            None
+            anyhow::bail!("Timed out on getting actual eth block number: {:?}", e);
         }
     }
 }
@@ -144,12 +133,13 @@ impl SyncedHeight {
 
 impl EthListener {
     #[allow(clippy::too_many_arguments)]
+    //todo move to  config
     pub async fn new(
         url: Url,
         db: Db,
         connections_number: usize,
         get_eth_data_timeout: Duration,
-        get_eth_data_attempts: u64,
+        get_eth_data_attempts: u32,
         eth_poll_interval: Duration,
         eth_poll_attempts: u64,
         bridge_address: Address,
@@ -172,6 +162,7 @@ impl EthListener {
             timeouts: Timeouts {
                 get_eth_data_timeout,
                 get_eth_data_attempts,
+                maximum_failed_responses_time: Duration::from_secs(86400),
                 eth_poll_interval,
                 eth_poll_attempts,
             },
@@ -181,20 +172,10 @@ impl EthListener {
         Ok(listener)
     }
 
-    pub async fn start(
-        self: &Arc<Self>,
-    ) -> Result<impl Stream<Item = Result<Event, Error>>, Error> {
+    pub async fn start(self: Arc<Self>) -> Result<impl Stream<Item = Result<Event, Error>>, Error> {
         log::debug!("Started iterating over ethereum blocks.");
         let from_height = self.current_block.clone();
-        let events_rx = spawn_blocks_scanner(
-            self.db.clone(),
-            self.web3.clone(),
-            self.topics.clone(),
-            from_height,
-            self.connections_pool.clone(),
-            self.timeouts,
-        );
-
+        let events_rx = self.spawn_blocks_scanner(from_height);
         Ok(events_rx)
     }
 
@@ -218,7 +199,7 @@ impl EthListener {
 
             match retry(
                 || self.web3.eth().transaction_receipt(hash),
-                generate_default_timeout_config(Duration::from_secs(86400)),
+                generate_default_timeout_config(self.timeouts.maximum_failed_responses_time),
                 "get transaction receipt",
             )
             .await
@@ -271,8 +252,8 @@ impl EthListener {
                 }
                 Err(e) => {
                     panic!(
-                        "Failed fetching info from eth node in 1 day. Last error: {}",
-                        e
+                        "Failed fetching info from eth node in {:?}. Last error: {}",
+                        self.timeouts.maximum_failed_responses_time, e
                     );
                 }
             }
@@ -307,7 +288,13 @@ impl EthListener {
                                     log::error!("No addresses in data");
                                     None
                                 } else {
-                                    Some(a[0].clone().into_address().map(|x| H160::from(x.0)))
+                                    Some(
+                                        a.first()
+                                            .expect("Checked upper")
+                                            .clone()
+                                            .into_address()
+                                            .map(|x| H160::from(x.0)),
+                                    )
                                 }
                             }
                             Err(e) => {
@@ -420,156 +407,158 @@ impl EthListener {
     }
 
     pub async fn get_synced_height(&self) -> Result<SyncedHeight, Error> {
-        let mut counter = self.timeouts.get_eth_data_attempts;
-        loop {
-            match self.web3.eth().syncing().await {
-                Ok(sync_state) => match sync_state {
-                    SyncState::Syncing(a) => {
-                        let current_synced_block = a.current_block.as_u64();
-                        let network_height = a.highest_block.as_u64();
-                        if network_height - current_synced_block > 200 {
-                            log::warn!(
-                                "Ethereum node is far behind network head: {} blocks to sync",
-                                network_height - current_synced_block
-                            );
-                            log::warn!("{:?}", a);
-                        }
-                        return Ok(SyncedHeight::NotSynced(current_synced_block));
+        match retry(
+            || self.web3.eth().syncing(),
+            RetryFutureConfig::new(self.timeouts.get_eth_data_attempts)
+                .fixed_backoff(self.timeouts.get_eth_data_timeout),
+            "eth syncing status",
+        )
+        .await
+        {
+            Ok(sync_state) => match sync_state {
+                SyncState::Syncing(a) => {
+                    let current_synced_block = a.current_block.as_u64();
+                    let network_height = a.highest_block.as_u64();
+                    if network_height - current_synced_block > 200 {
+                        log::warn!(
+                            "Ethereum node is far behind network head: {} blocks to sync",
+                            network_height - current_synced_block
+                        );
+                        log::warn!("{:?}", a);
                     }
-                    SyncState::NotSyncing => loop {
-                        match get_actual_eth_height(
+                    Ok(SyncedHeight::NotSynced(current_synced_block))
+                }
+                SyncState::NotSyncing => match retry(
+                    || {
+                        get_actual_eth_height(
                             &self.web3,
                             &self.connections_pool,
                             self.timeouts.get_eth_data_timeout,
                         )
-                        .await
-                        {
-                            Some(a) => return Ok(SyncedHeight::Synced(a)),
-                            None => {
-                                tokio::time::sleep(self.timeouts.eth_poll_interval).await;
-                                continue;
-                            }
-                        }
                     },
+                    generate_default_timeout_config(self.timeouts.maximum_failed_responses_time),
+                    "get actual ethereum height",
+                )
+                .await
+                {
+                    Ok(a) => Ok(SyncedHeight::Synced(a)),
+                    Err(e) => panic!(
+                        "Failed getting answer from eth node. Last error: {}. Elapsed time: {:?}",
+                        e, self.timeouts.maximum_failed_responses_time
+                    ),
                 },
-                Err(e) => {
-                    log::error!("Failed fetching eth sync status: {}", e);
-                    if counter == 0 {
-                        return Err(Error::new(e).context("Failed getting eth syncing status"));
-                    }
-                    counter -= 1;
-                    tokio::time::sleep(self.timeouts.get_eth_data_timeout).await;
-                }
+            },
+            Err(e) => {
+                anyhow::bail!("Failed fetching eth sync status: {}", e);
             }
         }
     }
-}
 
-fn spawn_blocks_scanner(
-    db: Tree,
-    w3: Web3<Http>,
-    topics: Arc<RwLock<(HashSet<Address>, HashSet<H256>)>>,
-    from_height: Arc<AtomicU64>,
-    connections_pool: Arc<Semaphore>,
-    timeouts: Timeouts,
-) -> impl Stream<Item = Result<Event, Error>> {
-    let (events_tx, events_rx) = unbounded_channel();
+    fn spawn_blocks_scanner(
+        self: Arc<Self>,
+        from_height: Arc<AtomicU64>,
+    ) -> impl Stream<Item = Result<Event, Error>> {
+        let (events_tx, events_rx) = unbounded_channel();
 
-    tokio::spawn(async move {
-        //
-        //
-        let w3 = w3.clone();
-        let connection_pool = connections_pool.clone();
-        let scanned_height = from_height;
-        loop {
-            // trying to get actual height
-            let ethereum_actual_height = loop {
-                match get_actual_eth_height(&w3, &connection_pool, timeouts.get_eth_data_timeout)
+        tokio::spawn({
+            let connection_pool = self.connections_pool.clone();
+            let scanned_height = from_height;
+            let this = self;
+            async move {
+                loop {
+                    // trying to get actual height
+                    let ethereum_actual_height = match retry(
+                        || {
+                            get_actual_eth_height(
+                                &this.web3,
+                                &connection_pool,
+                                this.timeouts.get_eth_data_timeout,
+                            )
+                        },
+                        generate_fixed_config(
+                            this.timeouts.eth_poll_interval,
+                            this.timeouts.maximum_failed_responses_time,
+                        ),
+                        "get actual ethereum height",
+                    )
                     .await
-                {
-                    Some(a) => break a,
-                    None => {
-                        tokio::time::sleep(timeouts.eth_poll_interval).await;
-                        log::debug!("Failed getting actual ethereum height. Retrying");
+                    {
+                        Ok(a) => a,
+                        Err(e) => {
+                            panic!("Failed getting actual ethereum height: {}", e);
+                        }
+                    };
+
+                    let mut loaded_height = scanned_height.load(Ordering::SeqCst);
+                    // sleeping in case of synchronization with eth
+                    if loaded_height >= ethereum_actual_height {
+                        tokio::time::sleep(this.timeouts.eth_poll_interval).await;
                         continue;
                     }
-                };
-            };
+                    // batch processing all blocks from `loaded_height` to `ethereum_actual_height`
+                    else {
+                        log::debug!(
+                            "Batch processing blocks from {} to {}",
+                            loaded_height,
+                            ethereum_actual_height
+                        );
+                        let block_number = BlockNumber::from(loaded_height);
+                        this.process_block(
+                            block_number,
+                            BlockNumber::from(ethereum_actual_height),
+                            &events_tx,
+                        )
+                        .await;
+                        loaded_height = ethereum_actual_height;
+                    }
 
-            let mut loaded_height = scanned_height.load(Ordering::SeqCst);
-            // sleeping in case of synchronization with eth
-            if loaded_height >= ethereum_actual_height {
-                tokio::time::sleep(timeouts.eth_poll_interval).await;
-                continue;
+                    if let Err(e) = update_eth_state(&this.db, loaded_height, ETH_LAST_MET_HEIGHT) {
+                        log::error!("Critical error: failed saving eth state: {}", e);
+                    };
+
+                    scanned_height.store(loaded_height, Ordering::SeqCst);
+                    log::trace!("Scanned height: {}", scanned_height.load(Ordering::SeqCst));
+
+                    tokio::time::sleep(this.timeouts.eth_poll_interval).await;
+                }
             }
-            // batch processing all blocks from `loaded_height` to `ethereum_actual_height`
-            else {
-                log::debug!(
-                    "Batch processing blocks from {} to {}",
-                    loaded_height,
-                    ethereum_actual_height
-                );
-                let block_number = BlockNumber::from(loaded_height);
-                process_block(
-                    &w3,
-                    topics.as_ref(),
-                    block_number,
-                    BlockNumber::from(ethereum_actual_height),
-                    &events_tx,
-                    &connection_pool,
-                    timeouts.eth_poll_attempts,
-                    timeouts.eth_poll_interval,
-                )
-                .await;
-                loaded_height = ethereum_actual_height;
-            }
-
-            if let Err(e) = update_eth_state(&db, loaded_height, ETH_LAST_MET_HEIGHT) {
-                log::error!("Critical error: failed saving eth state: {}", e);
-            };
-
-            scanned_height.store(loaded_height, Ordering::SeqCst);
-            log::trace!("Scanned height: {}", scanned_height.load(Ordering::SeqCst));
-
-            tokio::time::sleep(timeouts.eth_poll_interval).await;
-        }
-    });
-    tokio_stream::wrappers::UnboundedReceiverStream::new(events_rx)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn process_block(
-    w3: &Web3<Http>,
-    topics: &RwLock<(HashSet<Address>, HashSet<H256>)>,
-    from: BlockNumber,
-    to: BlockNumber,
-    events_tx: &UnboundedSender<Result<Event, Error>>,
-    connection_pool: &Arc<Semaphore>,
-    mut attempts_number: u64,
-    sleep_time: Duration,
-) {
-    // TODO: optimize
-    let (addresses, topics): (Vec<_>, Vec<_>) = {
-        let state = topics.read().await;
-        (
-            state.0.iter().cloned().collect(),
-            state.1.iter().cloned().collect(),
-        )
-    };
-    if addresses.is_empty() && topics.is_empty() {
-        log::warn!("Addresses and topics are empty. Cowardly refusing to process all ethereum transactions");
-        return;
+        });
+        tokio_stream::wrappers::UnboundedReceiverStream::new(events_rx)
     }
-    let filter = FilterBuilder::default()
-        .address(addresses)
-        .topics(Some(topics), None, None, None)
-        .from_block(from) //fixme
-        .to_block(to)
-        .build();
 
-    loop {
-        let _permit = connection_pool.acquire().await;
-        match w3.eth().logs(filter.clone()).await {
+    async fn process_block(
+        &self,
+        from: BlockNumber,
+        to: BlockNumber,
+        events_tx: &UnboundedSender<Result<Event, Error>>,
+    ) {
+        // TODO: optimize
+        let (addresses, topics): (Vec<_>, Vec<_>) = {
+            let state = self.topics.read().await;
+            (
+                state.0.iter().cloned().collect(),
+                state.1.iter().cloned().collect(),
+            )
+        };
+        if addresses.is_empty() && topics.is_empty() {
+            log::warn!("Addresses and topics are empty. Cowardly refusing to process all ethereum transactions");
+            return;
+        }
+        let filter = FilterBuilder::default()
+            .address(addresses)
+            .topics(Some(topics), None, None, None)
+            .from_block(from)
+            .to_block(to)
+            .build();
+
+        let _permit = self.connections_pool.acquire().await;
+        match retry(
+            || self.web3.eth().logs(filter.clone()),
+            generate_default_timeout_config(self.timeouts.maximum_failed_responses_time),
+            "get contract logs",
+        )
+        .await
+        {
             Ok(a) => {
                 if !a.is_empty() {
                     log::info!("There are some logs in block: {:?}", from);
@@ -592,20 +581,12 @@ async fn process_block(
                         }
                     }
                 }
-                return;
             }
             Err(e) => {
-                attempts_number -= 1;
-                if attempts_number == 0 {
-                    return;
-                }
-                log::error!("Critical error in eth subscriber: {}", e);
-                log::error!(
-                    "Retrying to get block: {:?}. Attempts left: {}",
-                    from,
-                    attempts_number
-                );
-                tokio::time::sleep(sleep_time).await;
+                panic!(
+                    "Failed getting answer from eth node. Last error: {}. Elapsed time: {:?}",
+                    e, self.timeouts.maximum_failed_responses_time
+                )
             }
         };
     }
@@ -644,8 +625,17 @@ fn generate_default_timeout_config(
         max_delay,
         total_time,
     );
-    let cfg = tryhard::RetryFutureConfig::new(times)
+    tryhard::RetryFutureConfig::new(times)
         .exponential_backoff(Duration::from_secs(1))
-        .max_delay(Duration::from_secs(600));
-    cfg
+        .max_delay(Duration::from_secs(600))
+}
+
+fn generate_fixed_config(
+    sleep_time: Duration,
+    total_time: Duration,
+) -> RetryFutureConfig<FixedBackoff, NoOnRetry> {
+    let times = (total_time.as_secs() / sleep_time.as_secs())
+        .try_into()
+        .expect("Overflow");
+    tryhard::RetryFutureConfig::new(times).fixed_backoff(sleep_time)
 }

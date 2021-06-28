@@ -231,7 +231,7 @@ impl Bridge {
 
         // Wait for all existing configuration contracts subscriptions to start ETH part properly
         let semaphore = Semaphore::new(known_contracts.len());
-        for active_configuration in known_contracts.into_iter() {
+        for active_configuration in known_contracts {
             let bridge = self.clone();
             let semaphore = semaphore.clone();
             tokio::spawn(async move {
@@ -267,7 +267,7 @@ impl Bridge {
         self.eth.retry_pending();
 
         // Subscribe for ETH blocks and events
-        let mut eth_events_rx = self.eth_listener.start().await?;
+        let mut eth_events_rx = self.eth_listener.clone().start().await?;
 
         // Spawn pending confirmations queue processing
         tokio::spawn(self.clone().watch_pending_confirmations());

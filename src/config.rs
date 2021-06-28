@@ -70,7 +70,7 @@ pub struct EthSettings {
     pub get_eth_data_timeout: Duration,
 
     /// Number of attempts  for getting non-critical data, like current eth sync status
-    pub get_eth_data_attempts: u64,
+    pub get_eth_data_attempts: u32,
 
     /// Poll interval between fetching new blocks
     #[serde(with = "relay_utils::serde_time")]
