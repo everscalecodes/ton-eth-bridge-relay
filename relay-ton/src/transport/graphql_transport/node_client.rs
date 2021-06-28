@@ -375,7 +375,7 @@ impl NodeClient {
             .and_then(|blocks| blocks.into_iter().flatten().next())
             .ok_or_else(no_blocks_found)?;
 
-        return match (
+        match (
             block.id,
             block.end_lt,
             block.gen_utime,
@@ -407,7 +407,7 @@ impl NodeClient {
                     .collect::<TransportResult<HashMap<_, _>>>()?,
             }),
             _ => Err(invalid_response()),
-        };
+        }
     }
 
     pub async fn wait_for_next_block(

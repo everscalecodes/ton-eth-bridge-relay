@@ -58,10 +58,12 @@ pub async fn make_bridge(
             configs.eth_settings.node_address.clone(),
             db.clone(),
             configs.eth_settings.tcp_connection_count,
-            configs.eth_settings.get_eth_data_timeout,
-            configs.eth_settings.get_eth_data_attempts,
-            configs.eth_settings.eth_poll_interval,
-            configs.eth_settings.eth_poll_attempts,
+            relay_eth::Timeouts {
+                get_eth_data_timeout: configs.eth_settings.get_eth_data_timeout,
+                get_eth_data_attempts: configs.eth_settings.get_eth_data_attempts,
+                maximum_failed_responses_time: configs.eth_settings.maximum_failed_responses_time,
+                eth_poll_interval: configs.eth_settings.eth_poll_interval,
+            },
             configs.eth_settings.bridge_address,
         )
         .await?,
