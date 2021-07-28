@@ -1,6 +1,6 @@
 [package]
 name = "relay"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2018"
 authors = ["Broxus team"]
 publish = false
@@ -64,7 +64,7 @@ ed25519-dalek = "1.0.1"
 
 # TON specific dependencies
 ton_block = { git = "https://github.com/tonlabs/ton-labs-block.git" }
-ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi.git" }
+ton_abi = { git = "https://github.com/tonlabs/ton-labs-abi", rev = "a2b2a9dc2e8c30a070e9af79cf0c24a55bdd5a87" }
 
 
 # Crypto stuff
@@ -75,6 +75,9 @@ sodiumoxide = "0.2.6"
 tiny-bip39 = "0.8.0"
 tiny-hderive = "0.3.0"
 tap = "1.0.1"
+
+# Nekoton SDK
+nekoton-parser = { git = "https://github.com/broxus/nekoton.git", branch = "feature/new_split"}
 
 [dev-dependencies]
 pretty_assertions = "0.7.2"
